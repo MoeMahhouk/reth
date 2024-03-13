@@ -17183,7 +17183,7 @@ __cold int mdbx_env_create(MDBX_env **penv) {
   }
 
 #if defined(__linux__) || defined(__gnu_linux__)
-  if (unlikely(linux_kernel_version < 0x04000000)) {
+  if (unlikely(linux_kernel_version < 0x03000000)) {
     /* 2022-09-01: Прошло уже больше двух после окончания какой-либо поддержки
      * самого "долгоиграющего" ядра 3.16.85 ветки 3.x */
     ERROR("too old linux kernel %u.%u.%u.%u, the >= 4.0.0 is required",
@@ -32127,7 +32127,7 @@ MDBX_INTERNAL_FUNC int osal_mmap(const int flags, osal_mmap_t *map, size_t size,
 #endif
 
   map->base = mmap(
-      NULL, limit, (flags & MDBX_WRITEMAP) ? PROT_READ | PROT_WRITE : PROT_READ,
+      NULL, limit, PROT_READ,
       MAP_SHARED | MAP_FILE | MAP_NORESERVE |
           (F_ISSET(flags, MDBX_UTTERLY_NOSYNC) ? MAP_NOSYNC : 0) |
           ((options & MMAP_OPTION_SEMAPHORE) ? MAP_HASSEMAPHORE | MAP_NOSYNC
@@ -32450,8 +32450,7 @@ retry_mapview:;
   const unsigned mmap_flags =
       MAP_CONCEAL | MAP_SHARED | MAP_FILE | MAP_NORESERVE |
       (F_ISSET(flags, MDBX_UTTERLY_NOSYNC) ? MAP_NOSYNC : 0);
-  const unsigned mmap_prot =
-      (flags & MDBX_WRITEMAP) ? PROT_READ | PROT_WRITE : PROT_READ;
+  const unsigned mmap_prot = PROT_READ;
 
   if (ptr == MAP_FAILED) {
     /* Try to mmap additional space beyond the end of mapping. */

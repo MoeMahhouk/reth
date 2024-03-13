@@ -95,6 +95,9 @@ fn main() {
         cc_builder.define("MDBX_DEBUG", "1").define("MDBX_ENABLE_PROFGC", "1");
     }
 
+    // disable MADVICE because it is not supported on gramine-sgx 
+    cc_builder.define("MDBX_ENABLE_MADVISE", "0");
+
     // Disables debug logging on optimized builds
     #[cfg(not(debug_assertions))]
     {
