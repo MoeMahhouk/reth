@@ -30210,11 +30210,13 @@ MDBX_INTERNAL_FUNC int osal_memalign_alloc(size_t alignment, size_t bytes,
 
 #ifndef osal_memalign_free
 MDBX_INTERNAL_FUNC void osal_memalign_free(void *ptr) {
+#ifndef GRAMINE
 #if defined(_WIN32) || defined(_WIN64)
   VirtualFree(ptr, 0, MEM_RELEASE);
 #else
   osal_free(ptr);
 #endif
+#endif // GRAMINE
 }
 #endif /* osal_memalign_free */
 
@@ -30233,144 +30235,184 @@ char *osal_strdup(const char *str) {
 /*----------------------------------------------------------------------------*/
 
 MDBX_INTERNAL_FUNC int osal_condpair_init(osal_condpair_t *condpair) {
+#ifndef GRAMINE
   int rc;
   memset(condpair, 0, sizeof(osal_condpair_t));
-#if defined(_WIN32) || defined(_WIN64)
-  if ((condpair->mutex = CreateMutexW(NULL, FALSE, NULL)) == NULL) {
-    rc = (int)GetLastError();
-    goto bailout_mutex;
-  }
-  if ((condpair->event[0] = CreateEventW(NULL, FALSE, FALSE, NULL)) == NULL) {
-    rc = (int)GetLastError();
-    goto bailout_event;
-  }
-  if ((condpair->event[1] = CreateEventW(NULL, FALSE, FALSE, NULL)) != NULL)
-    return MDBX_SUCCESS;
+  #if defined(_WIN32) || defined(_WIN64)
+    if ((condpair->mutex = CreateMutexW(NULL, FALSE, NULL)) == NULL) {
+      rc = (int)GetLastError();
+      goto bailout_mutex;
+    }
+    if ((condpair->event[0] = CreateEventW(NULL, FALSE, FALSE, NULL)) == NULL) {
+      rc = (int)GetLastError();
+      goto bailout_event;
+    }
+    if ((condpair->event[1] = CreateEventW(NULL, FALSE, FALSE, NULL)) != NULL)
+      return MDBX_SUCCESS;
 
-  rc = (int)GetLastError();
-  (void)CloseHandle(condpair->event[0]);
-bailout_event:
-  (void)CloseHandle(condpair->mutex);
+    rc = (int)GetLastError();
+    (void)CloseHandle(condpair->event[0]);
+  bailout_event:
+    (void)CloseHandle(condpair->mutex);
+  #else
+    rc = pthread_mutex_init(&condpair->mutex, NULL);
+    if (unlikely(rc != 0))
+      goto bailout_mutex;
+    rc = pthread_cond_init(&condpair->cond[0], NULL);
+    if (unlikely(rc != 0))
+      goto bailout_cond;
+    rc = pthread_cond_init(&condpair->cond[1], NULL);
+    if (likely(rc == 0))
+      return MDBX_SUCCESS;
+
+    (void)pthread_cond_destroy(&condpair->cond[0]);
+  bailout_cond:
+    (void)pthread_mutex_destroy(&condpair->mutex);
+  #endif
+  bailout_mutex:
+    memset(condpair, 0, sizeof(osal_condpair_t));
+    return rc;
 #else
-  rc = pthread_mutex_init(&condpair->mutex, NULL);
-  if (unlikely(rc != 0))
-    goto bailout_mutex;
-  rc = pthread_cond_init(&condpair->cond[0], NULL);
-  if (unlikely(rc != 0))
-    goto bailout_cond;
-  rc = pthread_cond_init(&condpair->cond[1], NULL);
-  if (likely(rc == 0))
-    return MDBX_SUCCESS;
-
-  (void)pthread_cond_destroy(&condpair->cond[0]);
-bailout_cond:
-  (void)pthread_mutex_destroy(&condpair->mutex);
-#endif
-bailout_mutex:
-  memset(condpair, 0, sizeof(osal_condpair_t));
-  return rc;
+  return MDBX_SUCCESS;
+#endif // GRAMINE 
 }
 
 MDBX_INTERNAL_FUNC int osal_condpair_destroy(osal_condpair_t *condpair) {
-#if defined(_WIN32) || defined(_WIN64)
-  int rc = CloseHandle(condpair->mutex) ? MDBX_SUCCESS : (int)GetLastError();
-  rc = CloseHandle(condpair->event[0]) ? rc : (int)GetLastError();
-  rc = CloseHandle(condpair->event[1]) ? rc : (int)GetLastError();
+#ifndef GRAMINE
+  #if defined(_WIN32) || defined(_WIN64)
+    int rc = CloseHandle(condpair->mutex) ? MDBX_SUCCESS : (int)GetLastError();
+    rc = CloseHandle(condpair->event[0]) ? rc : (int)GetLastError();
+    rc = CloseHandle(condpair->event[1]) ? rc : (int)GetLastError();
+  #else
+    int err, rc = pthread_mutex_destroy(&condpair->mutex);
+    rc = (err = pthread_cond_destroy(&condpair->cond[0])) ? err : rc;
+    rc = (err = pthread_cond_destroy(&condpair->cond[1])) ? err : rc;
+  #endif
+    memset(condpair, 0, sizeof(osal_condpair_t));
+    return rc;
 #else
-  int err, rc = pthread_mutex_destroy(&condpair->mutex);
-  rc = (err = pthread_cond_destroy(&condpair->cond[0])) ? err : rc;
-  rc = (err = pthread_cond_destroy(&condpair->cond[1])) ? err : rc;
-#endif
-  memset(condpair, 0, sizeof(osal_condpair_t));
-  return rc;
+  return MDBX_SUCCESS;
+#endif // GRAMINE 
 }
 
 MDBX_INTERNAL_FUNC int osal_condpair_lock(osal_condpair_t *condpair) {
-#if defined(_WIN32) || defined(_WIN64)
-  DWORD code = WaitForSingleObject(condpair->mutex, INFINITE);
-  return waitstatus2errcode(code);
+#ifndef GRAMINE
+  #if defined(_WIN32) || defined(_WIN64)
+    DWORD code = WaitForSingleObject(condpair->mutex, INFINITE);
+    return waitstatus2errcode(code);
+  #else
+    return osal_pthread_mutex_lock(&condpair->mutex);
+  #endif
 #else
-  return osal_pthread_mutex_lock(&condpair->mutex);
-#endif
+  return MDBX_SUCCESS;
+#endif // GRAMINE 
 }
 
 MDBX_INTERNAL_FUNC int osal_condpair_unlock(osal_condpair_t *condpair) {
-#if defined(_WIN32) || defined(_WIN64)
-  return ReleaseMutex(condpair->mutex) ? MDBX_SUCCESS : (int)GetLastError();
+#ifndef GRAMINE
+  #if defined(_WIN32) || defined(_WIN64)
+    return ReleaseMutex(condpair->mutex) ? MDBX_SUCCESS : (int)GetLastError();
+  #else
+    return pthread_mutex_unlock(&condpair->mutex);
+  #endif
 #else
-  return pthread_mutex_unlock(&condpair->mutex);
-#endif
+  return MDBX_SUCCESS;
+#endif // GRAMINE 
 }
 
 MDBX_INTERNAL_FUNC int osal_condpair_signal(osal_condpair_t *condpair,
                                             bool part) {
-#if defined(_WIN32) || defined(_WIN64)
-  return SetEvent(condpair->event[part]) ? MDBX_SUCCESS : (int)GetLastError();
+#ifndef GRAMINE                                       
+  #if defined(_WIN32) || defined(_WIN64)
+    return SetEvent(condpair->event[part]) ? MDBX_SUCCESS : (int)GetLastError();
+  #else
+    return pthread_cond_signal(&condpair->cond[part]);
+  #endif
 #else
-  return pthread_cond_signal(&condpair->cond[part]);
-#endif
+  return MDBX_SUCCESS;
+#endif // GRAMINE 
 }
 
 MDBX_INTERNAL_FUNC int osal_condpair_wait(osal_condpair_t *condpair,
                                           bool part) {
-#if defined(_WIN32) || defined(_WIN64)
-  DWORD code = SignalObjectAndWait(condpair->mutex, condpair->event[part],
-                                   INFINITE, FALSE);
-  if (code == WAIT_OBJECT_0) {
-    code = WaitForSingleObject(condpair->mutex, INFINITE);
-    if (code == WAIT_OBJECT_0)
-      return MDBX_SUCCESS;
-  }
-  return waitstatus2errcode(code);
+#ifndef GRAMINE 
+  #if defined(_WIN32) || defined(_WIN64)
+    DWORD code = SignalObjectAndWait(condpair->mutex, condpair->event[part],
+                                    INFINITE, FALSE);
+    if (code == WAIT_OBJECT_0) {
+      code = WaitForSingleObject(condpair->mutex, INFINITE);
+      if (code == WAIT_OBJECT_0)
+        return MDBX_SUCCESS;
+    }
+    return waitstatus2errcode(code);
+  #else
+    return pthread_cond_wait(&condpair->cond[part], &condpair->mutex);
+  #endif
 #else
-  return pthread_cond_wait(&condpair->cond[part], &condpair->mutex);
-#endif
+  return MDBX_SUCCESS;
+#endif // GRAMINE 
 }
 
 /*----------------------------------------------------------------------------*/
 
 MDBX_INTERNAL_FUNC int osal_fastmutex_init(osal_fastmutex_t *fastmutex) {
-#if defined(_WIN32) || defined(_WIN64)
-  InitializeCriticalSection(fastmutex);
-  return MDBX_SUCCESS;
+#ifndef GRAMINE
+  #if defined(_WIN32) || defined(_WIN64)
+    InitializeCriticalSection(fastmutex);
+    return MDBX_SUCCESS;
+  #else
+    return pthread_mutex_init(fastmutex, NULL);
+  #endif
 #else
-  return pthread_mutex_init(fastmutex, NULL);
-#endif
+  return MDBX_SUCCESS;
+#endif // GRAMINE
 }
 
 MDBX_INTERNAL_FUNC int osal_fastmutex_destroy(osal_fastmutex_t *fastmutex) {
-#if defined(_WIN32) || defined(_WIN64)
-  DeleteCriticalSection(fastmutex);
-  return MDBX_SUCCESS;
+#ifndef GRAMINE
+  #if defined(_WIN32) || defined(_WIN64)
+    DeleteCriticalSection(fastmutex);
+    return MDBX_SUCCESS;
+  #else
+    return pthread_mutex_destroy(fastmutex);
+  #endif
 #else
-  return pthread_mutex_destroy(fastmutex);
-#endif
+  return MDBX_SUCCESS;
+#endif // GRAMINE 
 }
 
 MDBX_INTERNAL_FUNC int osal_fastmutex_acquire(osal_fastmutex_t *fastmutex) {
-#if defined(_WIN32) || defined(_WIN64)
-  __try {
-    EnterCriticalSection(fastmutex);
-  } __except (
-      (GetExceptionCode() ==
-       0xC0000194 /* STATUS_POSSIBLE_DEADLOCK / EXCEPTION_POSSIBLE_DEADLOCK */)
-          ? EXCEPTION_EXECUTE_HANDLER
-          : EXCEPTION_CONTINUE_SEARCH) {
-    return ERROR_POSSIBLE_DEADLOCK;
-  }
-  return MDBX_SUCCESS;
+#ifndef GRAMINE  
+  #if defined(_WIN32) || defined(_WIN64)
+    __try {
+      EnterCriticalSection(fastmutex);
+    } __except (
+        (GetExceptionCode() ==
+        0xC0000194 /* STATUS_POSSIBLE_DEADLOCK / EXCEPTION_POSSIBLE_DEADLOCK */)
+            ? EXCEPTION_EXECUTE_HANDLER
+            : EXCEPTION_CONTINUE_SEARCH) {
+      return ERROR_POSSIBLE_DEADLOCK;
+    }
+    return MDBX_SUCCESS;
+  #else
+    return osal_pthread_mutex_lock(fastmutex);
+  #endif
 #else
-  return osal_pthread_mutex_lock(fastmutex);
-#endif
+  return MDBX_SUCCESS;
+#endif // GRAMINE
 }
 
 MDBX_INTERNAL_FUNC int osal_fastmutex_release(osal_fastmutex_t *fastmutex) {
-#if defined(_WIN32) || defined(_WIN64)
-  LeaveCriticalSection(fastmutex);
-  return MDBX_SUCCESS;
+#ifndef GRAMINE 
+  #if defined(_WIN32) || defined(_WIN64)
+    LeaveCriticalSection(fastmutex);
+    return MDBX_SUCCESS;
+  #else
+    return pthread_mutex_unlock(fastmutex);
+  #endif
 #else
-  return pthread_mutex_unlock(fastmutex);
-#endif
+  return MDBX_SUCCESS;
+#endif // GRAMINE
 }
 
 /*----------------------------------------------------------------------------*/
@@ -31447,49 +31489,53 @@ int osal_pwritev(mdbx_filehandle_t fd, struct iovec *iov, size_t sgvcnt,
 
 MDBX_INTERNAL_FUNC int osal_fsync(mdbx_filehandle_t fd,
                                   enum osal_syncmode_bits mode_bits) {
-#if defined(_WIN32) || defined(_WIN64)
-  if ((mode_bits & (MDBX_SYNC_DATA | MDBX_SYNC_IODQ)) && !FlushFileBuffers(fd))
-    return (int)GetLastError();
-  return MDBX_SUCCESS;
-#else
+#ifndef GRAMINE 
+  #if defined(_WIN32) || defined(_WIN64)
+    if ((mode_bits & (MDBX_SYNC_DATA | MDBX_SYNC_IODQ)) && !FlushFileBuffers(fd))
+      return (int)GetLastError();
+    return MDBX_SUCCESS;
+  #else
 
-#if defined(__APPLE__) &&                                                      \
-    MDBX_OSX_SPEED_INSTEADOF_DURABILITY == MDBX_OSX_WANNA_DURABILITY
-  if (mode_bits & MDBX_SYNC_IODQ)
-    return likely(fcntl(fd, F_FULLFSYNC) != -1) ? MDBX_SUCCESS : errno;
-#endif /* MacOS */
+  #if defined(__APPLE__) &&                                                      \
+      MDBX_OSX_SPEED_INSTEADOF_DURABILITY == MDBX_OSX_WANNA_DURABILITY
+    if (mode_bits & MDBX_SYNC_IODQ)
+      return likely(fcntl(fd, F_FULLFSYNC) != -1) ? MDBX_SUCCESS : errno;
+  #endif /* MacOS */
 
-  /* LY: This approach is always safe and without appreciable performance
-   * degradation, even on a kernel with fdatasync's bug.
-   *
-   * For more info about of a corresponding fdatasync() bug
-   * see http://www.spinics.net/lists/linux-ext4/msg33714.html */
-  while (1) {
-    switch (mode_bits & (MDBX_SYNC_DATA | MDBX_SYNC_SIZE)) {
-    case MDBX_SYNC_NONE:
-    case MDBX_SYNC_KICK:
-      return MDBX_SUCCESS /* nothing to do */;
-#if defined(_POSIX_SYNCHRONIZED_IO) && _POSIX_SYNCHRONIZED_IO > 0
-    case MDBX_SYNC_DATA:
-      if (likely(fdatasync(fd) == 0))
+    /* LY: This approach is always safe and without appreciable performance
+    * degradation, even on a kernel with fdatasync's bug.
+    *
+    * For more info about of a corresponding fdatasync() bug
+    * see http://www.spinics.net/lists/linux-ext4/msg33714.html */
+    while (1) {
+      switch (mode_bits & (MDBX_SYNC_DATA | MDBX_SYNC_SIZE)) {
+      case MDBX_SYNC_NONE:
+      case MDBX_SYNC_KICK:
+        return MDBX_SUCCESS /* nothing to do */;
+  #if defined(_POSIX_SYNCHRONIZED_IO) && _POSIX_SYNCHRONIZED_IO > 0
+      case MDBX_SYNC_DATA:
+        if (likely(fdatasync(fd) == 0))
+          return MDBX_SUCCESS;
+        break /* error */;
+  #if defined(__linux__) || defined(__gnu_linux__)
+      case MDBX_SYNC_SIZE:
+        assert(linux_kernel_version >= 0x03060000);
         return MDBX_SUCCESS;
-      break /* error */;
-#if defined(__linux__) || defined(__gnu_linux__)
-    case MDBX_SYNC_SIZE:
-      assert(linux_kernel_version >= 0x03060000);
-      return MDBX_SUCCESS;
-#endif /* Linux */
-#endif /* _POSIX_SYNCHRONIZED_IO > 0 */
-    default:
-      if (likely(fsync(fd) == 0))
-        return MDBX_SUCCESS;
+  #endif /* Linux */
+  #endif /* _POSIX_SYNCHRONIZED_IO > 0 */
+      default:
+        if (likely(fsync(fd) == 0))
+          return MDBX_SUCCESS;
+      }
+
+      int rc = errno;
+      if (rc != EINTR)
+        return rc;
     }
-
-    int rc = errno;
-    if (rc != EINTR)
-      return rc;
-  }
-#endif
+  #endif
+#else
+  return MDBX_SUCCESS;
+#endif // GRAMINE
 }
 
 int osal_filesize(mdbx_filehandle_t fd, uint64_t *length) {
@@ -31608,65 +31654,69 @@ MDBX_INTERNAL_FUNC int osal_thread_join(osal_thread_t thread) {
 MDBX_INTERNAL_FUNC int osal_msync(const osal_mmap_t *map, size_t offset,
                                   size_t length,
                                   enum osal_syncmode_bits mode_bits) {
+#ifndef GRAMINE
   if (!MDBX_MMAP_USE_MS_ASYNC && mode_bits == MDBX_SYNC_NONE)
     return MDBX_SUCCESS;
 
-  void *ptr = ptr_disp(map->base, offset);
-#if defined(_WIN32) || defined(_WIN64)
-  if (!FlushViewOfFile(ptr, length))
-    return (int)GetLastError();
-  if ((mode_bits & (MDBX_SYNC_DATA | MDBX_SYNC_IODQ)) &&
-      !FlushFileBuffers(map->fd))
-    return (int)GetLastError();
-#else
-#if defined(__linux__) || defined(__gnu_linux__)
-  /* Since Linux 2.6.19, MS_ASYNC is in fact a no-op. The kernel properly
-   * tracks dirty pages and flushes ones as necessary. */
-  //
-  // However, this behavior may be changed in custom kernels,
-  // so just leave such optimization to the libc discretion.
-  // NOTE: The MDBX_MMAP_USE_MS_ASYNC must be defined to 1 for such cases.
-  //
-  // assert(linux_kernel_version > 0x02061300);
-  // if (mode_bits <= MDBX_SYNC_KICK)
-  //   return MDBX_SUCCESS;
-#endif /* Linux */
-  if (msync(ptr, length, (mode_bits & MDBX_SYNC_DATA) ? MS_SYNC : MS_ASYNC))
-    return errno;
-  if ((mode_bits & MDBX_SYNC_SIZE) && fsync(map->fd))
-    return errno;
-#endif
+    void *ptr = ptr_disp(map->base, offset);
+  #if defined(_WIN32) || defined(_WIN64)
+    if (!FlushViewOfFile(ptr, length))
+      return (int)GetLastError();
+    if ((mode_bits & (MDBX_SYNC_DATA | MDBX_SYNC_IODQ)) &&
+        !FlushFileBuffers(map->fd))
+      return (int)GetLastError();
+  #else
+  #if defined(__linux__) || defined(__gnu_linux__)
+    /* Since Linux 2.6.19, MS_ASYNC is in fact a no-op. The kernel properly
+    * tracks dirty pages and flushes ones as necessary. */
+    //
+    // However, this behavior may be changed in custom kernels,
+    // so just leave such optimization to the libc discretion.
+    // NOTE: The MDBX_MMAP_USE_MS_ASYNC must be defined to 1 for such cases.
+    //
+    // assert(linux_kernel_version > 0x02061300);
+    // if (mode_bits <= MDBX_SYNC_KICK)
+    //   return MDBX_SUCCESS;
+  #endif /* Linux */
+    if (msync(ptr, length, (mode_bits & MDBX_SYNC_DATA) ? MS_SYNC : MS_ASYNC))
+      return errno;
+    if ((mode_bits & MDBX_SYNC_SIZE) && fsync(map->fd))
+      return errno;
+  #endif
+#endif // GRAMINE
   return MDBX_SUCCESS;
 }
 
 MDBX_INTERNAL_FUNC int osal_check_fs_rdonly(mdbx_filehandle_t handle,
                                             const pathchar_t *pathname,
                                             int err) {
-#if defined(_WIN32) || defined(_WIN64)
-  (void)pathname;
-  (void)err;
-  if (!mdbx_GetVolumeInformationByHandleW)
-    return MDBX_ENOSYS;
-  DWORD unused, flags;
-  if (!mdbx_GetVolumeInformationByHandleW(handle, nullptr, 0, nullptr, &unused,
-                                          &flags, nullptr, 0))
-    return (int)GetLastError();
-  if ((flags & FILE_READ_ONLY_VOLUME) == 0)
-    return MDBX_EACCESS;
-#else
-  struct statvfs info;
-  if (err != MDBX_ENOFILE) {
-    if (statvfs(pathname, &info) == 0)
-      return (info.f_flag & ST_RDONLY) ? MDBX_SUCCESS : err;
-    if (errno != MDBX_ENOFILE)
+#ifndef GRAMINE
+  #if defined(_WIN32) || defined(_WIN64)
+    (void)pathname;
+    (void)err;
+    if (!mdbx_GetVolumeInformationByHandleW)
+      return MDBX_ENOSYS;
+    DWORD unused, flags;
+    if (!mdbx_GetVolumeInformationByHandleW(handle, nullptr, 0, nullptr, &unused,
+                                            &flags, nullptr, 0))
+      return (int)GetLastError();
+    if ((flags & FILE_READ_ONLY_VOLUME) == 0)
+      return MDBX_EACCESS;
+  #else
+    struct statvfs info;
+    if (err != MDBX_ENOFILE) {
+      if (statvfs(pathname, &info) == 0)
+        return (info.f_flag & ST_RDONLY) ? MDBX_SUCCESS : err;
+      if (errno != MDBX_ENOFILE)
+        return errno;
+    }
+    if (fstatvfs(handle, &info))
       return errno;
-  }
-  if (fstatvfs(handle, &info))
-    return errno;
-  if ((info.f_flag & ST_RDONLY) == 0)
-    return (err == MDBX_ENOFILE) ? MDBX_EACCESS : err;
-#endif /* !Windows */
-  return MDBX_SUCCESS;
+    if ((info.f_flag & ST_RDONLY) == 0)
+      return (err == MDBX_ENOFILE) ? MDBX_EACCESS : err;
+  #endif /* !Windows */
+#endif // GRAMINE
+    return MDBX_SUCCESS;
 }
 
 MDBX_INTERNAL_FUNC int osal_check_fs_incore(mdbx_filehandle_t handle) {
@@ -32127,8 +32177,8 @@ MDBX_INTERNAL_FUNC int osal_mmap(const int flags, osal_mmap_t *map, size_t size,
 #endif
 
   map->base = mmap(
-      NULL, limit, PROT_READ,
-      MAP_SHARED | MAP_FILE | MAP_NORESERVE |
+      NULL, limit, (flags & MDBX_WRITEMAP) ? PROT_READ | PROT_WRITE : PROT_READ,,
+      MAP_PRIVATE | MAP_FILE | MAP_NORESERVE |
           (F_ISSET(flags, MDBX_UTTERLY_NOSYNC) ? MAP_NOSYNC : 0) |
           ((options & MMAP_OPTION_SEMAPHORE) ? MAP_HASSEMAPHORE | MAP_NOSYNC
                                              : MAP_CONCEAL),
@@ -32448,9 +32498,9 @@ retry_mapview:;
 #endif /* Linux & _GNU_SOURCE */
 
   const unsigned mmap_flags =
-      MAP_CONCEAL | MAP_SHARED | MAP_FILE | MAP_NORESERVE |
+      MAP_CONCEAL | MAP_PRIVATE | MAP_FILE | MAP_NORESERVE |
       (F_ISSET(flags, MDBX_UTTERLY_NOSYNC) ? MAP_NOSYNC : 0);
-  const unsigned mmap_prot = PROT_READ;
+  const unsigned mmap_prot = (flags & MDBX_WRITEMAP) ? PROT_READ | PROT_WRITE : PROT_READ,;
 
   if (ptr == MAP_FAILED) {
     /* Try to mmap additional space beyond the end of mapping. */
@@ -34923,220 +34973,228 @@ __cold MDBX_INTERNAL_FUNC int osal_lck_destroy(MDBX_env *env,
 __cold MDBX_INTERNAL_FUNC int osal_lck_init(MDBX_env *env,
                                             MDBX_env *inprocess_neighbor,
                                             int global_uniqueness_flag) {
-#if MDBX_LOCKING == MDBX_LOCKING_SYSV
-  int semid = -1;
-  /* don't initialize semaphores twice */
-  (void)inprocess_neighbor;
-  if (global_uniqueness_flag == MDBX_RESULT_TRUE) {
-    struct stat st;
-    if (fstat(env->me_lazy_fd, &st))
-      return errno;
-  sysv_retry_create:
-    semid = semget(env->me_sysv_ipc.key, 2,
-                   IPC_CREAT | IPC_EXCL |
-                       (st.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)));
-    if (unlikely(semid == -1)) {
-      int err = errno;
-      if (err != EEXIST)
-        return err;
-
-      /* remove and re-create semaphore set */
-      semid = semget(env->me_sysv_ipc.key, 2, 0);
-      if (semid == -1) {
-        err = errno;
-        if (err != ENOENT)
+#ifndef GRAMINE                                              
+  #if MDBX_LOCKING == MDBX_LOCKING_SYSV
+    int semid = -1;
+    /* don't initialize semaphores twice */
+    (void)inprocess_neighbor;
+    if (global_uniqueness_flag == MDBX_RESULT_TRUE) {
+      struct stat st;
+      if (fstat(env->me_lazy_fd, &st))
+        return errno;
+    sysv_retry_create:
+      semid = semget(env->me_sysv_ipc.key, 2,
+                    IPC_CREAT | IPC_EXCL |
+                        (st.st_mode & (S_IRWXU | S_IRWXG | S_IRWXO)));
+      if (unlikely(semid == -1)) {
+        int err = errno;
+        if (err != EEXIST)
           return err;
+
+        /* remove and re-create semaphore set */
+        semid = semget(env->me_sysv_ipc.key, 2, 0);
+        if (semid == -1) {
+          err = errno;
+          if (err != ENOENT)
+            return err;
+          goto sysv_retry_create;
+        }
+        if (semctl(semid, 2, IPC_RMID)) {
+          err = errno;
+          if (err != EIDRM)
+            return err;
+        }
         goto sysv_retry_create;
       }
-      if (semctl(semid, 2, IPC_RMID)) {
-        err = errno;
-        if (err != EIDRM)
-          return err;
-      }
-      goto sysv_retry_create;
+
+      unsigned short val_array[2] = {1, 1};
+      if (semctl(semid, 2, SETALL, val_array))
+        return errno;
+    } else {
+      semid = semget(env->me_sysv_ipc.key, 2, 0);
+      if (semid == -1)
+        return errno;
+
+      /* check read & write access */
+      struct semid_ds data[2];
+      if (semctl(semid, 2, IPC_STAT, data) || semctl(semid, 2, IPC_SET, data))
+        return errno;
     }
 
-    unsigned short val_array[2] = {1, 1};
-    if (semctl(semid, 2, SETALL, val_array))
-      return errno;
-  } else {
-    semid = semget(env->me_sysv_ipc.key, 2, 0);
-    if (semid == -1)
-      return errno;
-
-    /* check read & write access */
-    struct semid_ds data[2];
-    if (semctl(semid, 2, IPC_STAT, data) || semctl(semid, 2, IPC_SET, data))
-      return errno;
-  }
-
-  env->me_sysv_ipc.semid = semid;
-  return MDBX_SUCCESS;
-
-#elif MDBX_LOCKING == MDBX_LOCKING_FUTEX
-  (void)inprocess_neighbor;
-  if (global_uniqueness_flag != MDBX_RESULT_TRUE)
+    env->me_sysv_ipc.semid = semid;
     return MDBX_SUCCESS;
-#error "FIXME: Not implemented"
-#elif MDBX_LOCKING == MDBX_LOCKING_POSIX1988
 
-  /* don't initialize semaphores twice */
-  (void)inprocess_neighbor;
-  if (global_uniqueness_flag == MDBX_RESULT_TRUE) {
-    if (sem_init(&env->me_lck_mmap.lck->mti_rlock, true, 1))
-      return errno;
-    if (sem_init(&env->me_lck_mmap.lck->mti_wlock, true, 1))
-      return errno;
-  }
-  return MDBX_SUCCESS;
+  #elif MDBX_LOCKING == MDBX_LOCKING_FUTEX
+    (void)inprocess_neighbor;
+    if (global_uniqueness_flag != MDBX_RESULT_TRUE)
+      return MDBX_SUCCESS;
+  #error "FIXME: Not implemented"
+  #elif MDBX_LOCKING == MDBX_LOCKING_POSIX1988
 
-#elif MDBX_LOCKING == MDBX_LOCKING_POSIX2001 ||                                \
-    MDBX_LOCKING == MDBX_LOCKING_POSIX2008
-  if (inprocess_neighbor)
-    return MDBX_SUCCESS /* don't need any initialization for mutexes
-      if LCK already opened/used inside current process */
-        ;
-
-    /* FIXME: Unfortunately, there is no other reliable way but to long testing
-     * on each platform. On the other hand, behavior like FreeBSD is incorrect
-     * and we can expect it to be rare. Moreover, even on FreeBSD without
-     * additional in-process initialization, the probability of an problem
-     * occurring is vanishingly small, and the symptom is a return of EINVAL
-     * while locking a mutex. In other words, in the worst case, the problem
-     * results in an EINVAL error at the start of the transaction, but NOT data
-     * loss, nor database corruption, nor other fatal troubles. Thus, the code
-     * below I am inclined to think the workaround for erroneous platforms (like
-     * FreeBSD), rather than a defect of libmdbx. */
-#if defined(__FreeBSD__)
-  /* seems that shared mutexes on FreeBSD required in-process initialization */
-  (void)global_uniqueness_flag;
-#else
-  /* shared mutexes on many other platforms (including Darwin and Linux's
-   * futexes) doesn't need any addition in-process initialization */
-  if (global_uniqueness_flag != MDBX_RESULT_TRUE)
+    /* don't initialize semaphores twice */
+    (void)inprocess_neighbor;
+    if (global_uniqueness_flag == MDBX_RESULT_TRUE) {
+      if (sem_init(&env->me_lck_mmap.lck->mti_rlock, true, 1))
+        return errno;
+      if (sem_init(&env->me_lck_mmap.lck->mti_wlock, true, 1))
+        return errno;
+    }
     return MDBX_SUCCESS;
-#endif
 
-  pthread_mutexattr_t ma;
-  int rc = pthread_mutexattr_init(&ma);
-  if (rc)
+  #elif MDBX_LOCKING == MDBX_LOCKING_POSIX2001 ||                                \
+      MDBX_LOCKING == MDBX_LOCKING_POSIX2008
+    if (inprocess_neighbor)
+      return MDBX_SUCCESS /* don't need any initialization for mutexes
+        if LCK already opened/used inside current process */
+          ;
+
+      /* FIXME: Unfortunately, there is no other reliable way but to long testing
+      * on each platform. On the other hand, behavior like FreeBSD is incorrect
+      * and we can expect it to be rare. Moreover, even on FreeBSD without
+      * additional in-process initialization, the probability of an problem
+      * occurring is vanishingly small, and the symptom is a return of EINVAL
+      * while locking a mutex. In other words, in the worst case, the problem
+      * results in an EINVAL error at the start of the transaction, but NOT data
+      * loss, nor database corruption, nor other fatal troubles. Thus, the code
+      * below I am inclined to think the workaround for erroneous platforms (like
+      * FreeBSD), rather than a defect of libmdbx. */
+  #if defined(__FreeBSD__)
+    /* seems that shared mutexes on FreeBSD required in-process initialization */
+    (void)global_uniqueness_flag;
+  #else
+    /* shared mutexes on many other platforms (including Darwin and Linux's
+    * futexes) doesn't need any addition in-process initialization */
+    if (global_uniqueness_flag != MDBX_RESULT_TRUE)
+      return MDBX_SUCCESS;
+  #endif
+
+    pthread_mutexattr_t ma;
+    int rc = pthread_mutexattr_init(&ma);
+    if (rc)
+      return rc;
+
+    rc = pthread_mutexattr_setpshared(&ma, PTHREAD_PROCESS_SHARED);
+    if (rc)
+      goto bailout;
+
+  #if MDBX_LOCKING == MDBX_LOCKING_POSIX2008
+  #if defined(PTHREAD_MUTEX_ROBUST) || defined(pthread_mutexattr_setrobust)
+    rc = pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);
+  #elif defined(PTHREAD_MUTEX_ROBUST_NP) ||                                      \
+      defined(pthread_mutexattr_setrobust_np)
+    rc = pthread_mutexattr_setrobust_np(&ma, PTHREAD_MUTEX_ROBUST_NP);
+  #elif _POSIX_THREAD_PROCESS_SHARED < 200809L
+    rc = pthread_mutexattr_setrobust_np(&ma, PTHREAD_MUTEX_ROBUST_NP);
+  #else
+    rc = pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);
+  #endif
+    if (rc)
+      goto bailout;
+  #endif /* MDBX_LOCKING == MDBX_LOCKING_POSIX2008 */
+
+  #if defined(_POSIX_THREAD_PRIO_INHERIT) && _POSIX_THREAD_PRIO_INHERIT >= 0 &&  \
+      !defined(MDBX_SAFE4QEMU)
+    rc = pthread_mutexattr_setprotocol(&ma, PTHREAD_PRIO_INHERIT);
+    if (rc == ENOTSUP)
+      rc = pthread_mutexattr_setprotocol(&ma, PTHREAD_PRIO_NONE);
+    if (rc && rc != ENOTSUP)
+      goto bailout;
+  #endif /* PTHREAD_PRIO_INHERIT */
+
+    rc = pthread_mutexattr_settype(&ma, PTHREAD_MUTEX_ERRORCHECK);
+    if (rc && rc != ENOTSUP)
+      goto bailout;
+
+    rc = pthread_mutex_init(&env->me_lck_mmap.lck->mti_rlock, &ma);
+    if (rc)
+      goto bailout;
+    rc = pthread_mutex_init(&env->me_lck_mmap.lck->mti_wlock, &ma);
+
+  bailout:
+    pthread_mutexattr_destroy(&ma);
     return rc;
-
-  rc = pthread_mutexattr_setpshared(&ma, PTHREAD_PROCESS_SHARED);
-  if (rc)
-    goto bailout;
-
-#if MDBX_LOCKING == MDBX_LOCKING_POSIX2008
-#if defined(PTHREAD_MUTEX_ROBUST) || defined(pthread_mutexattr_setrobust)
-  rc = pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);
-#elif defined(PTHREAD_MUTEX_ROBUST_NP) ||                                      \
-    defined(pthread_mutexattr_setrobust_np)
-  rc = pthread_mutexattr_setrobust_np(&ma, PTHREAD_MUTEX_ROBUST_NP);
-#elif _POSIX_THREAD_PROCESS_SHARED < 200809L
-  rc = pthread_mutexattr_setrobust_np(&ma, PTHREAD_MUTEX_ROBUST_NP);
+  #else
+  #error "FIXME"
+  #endif /* MDBX_LOCKING > 0 */
 #else
-  rc = pthread_mutexattr_setrobust(&ma, PTHREAD_MUTEX_ROBUST);
-#endif
-  if (rc)
-    goto bailout;
-#endif /* MDBX_LOCKING == MDBX_LOCKING_POSIX2008 */
-
-#if defined(_POSIX_THREAD_PRIO_INHERIT) && _POSIX_THREAD_PRIO_INHERIT >= 0 &&  \
-    !defined(MDBX_SAFE4QEMU)
-  rc = pthread_mutexattr_setprotocol(&ma, PTHREAD_PRIO_INHERIT);
-  if (rc == ENOTSUP)
-    rc = pthread_mutexattr_setprotocol(&ma, PTHREAD_PRIO_NONE);
-  if (rc && rc != ENOTSUP)
-    goto bailout;
-#endif /* PTHREAD_PRIO_INHERIT */
-
-  rc = pthread_mutexattr_settype(&ma, PTHREAD_MUTEX_ERRORCHECK);
-  if (rc && rc != ENOTSUP)
-    goto bailout;
-
-  rc = pthread_mutex_init(&env->me_lck_mmap.lck->mti_rlock, &ma);
-  if (rc)
-    goto bailout;
-  rc = pthread_mutex_init(&env->me_lck_mmap.lck->mti_wlock, &ma);
-
-bailout:
-  pthread_mutexattr_destroy(&ma);
-  return rc;
-#else
-#error "FIXME"
-#endif /* MDBX_LOCKING > 0 */
+  return MDBX_SUCCESS;
+#endif // GRAMINE  
 }
 
 __cold static int mdbx_ipclock_failed(MDBX_env *env, osal_ipclock_t *ipc,
                                       const int err) {
+#ifndef GRAMINE
   int rc = err;
-#if MDBX_LOCKING == MDBX_LOCKING_POSIX2008 || MDBX_LOCKING == MDBX_LOCKING_SYSV
-  if (err == EOWNERDEAD) {
-    /* We own the mutex. Clean up after dead previous owner. */
+  #if MDBX_LOCKING == MDBX_LOCKING_POSIX2008 || MDBX_LOCKING == MDBX_LOCKING_SYSV
+    if (err == EOWNERDEAD) {
+      /* We own the mutex. Clean up after dead previous owner. */
 
-    const bool rlocked = ipc == &env->me_lck->mti_rlock;
-    rc = MDBX_SUCCESS;
-    if (!rlocked) {
-      if (unlikely(env->me_txn)) {
-        /* env is hosed if the dead thread was ours */
-        env->me_flags |= MDBX_FATAL_ERROR;
-        env->me_txn = NULL;
-        rc = MDBX_PANIC;
+      const bool rlocked = ipc == &env->me_lck->mti_rlock;
+      rc = MDBX_SUCCESS;
+      if (!rlocked) {
+        if (unlikely(env->me_txn)) {
+          /* env is hosed if the dead thread was ours */
+          env->me_flags |= MDBX_FATAL_ERROR;
+          env->me_txn = NULL;
+          rc = MDBX_PANIC;
+        }
       }
+      WARNING("%clock owner died, %s", (rlocked ? 'r' : 'w'),
+              (rc ? "this process' env is hosed" : "recovering"));
+
+      int check_rc = cleanup_dead_readers(env, rlocked, NULL);
+      check_rc = (check_rc == MDBX_SUCCESS) ? MDBX_RESULT_TRUE : check_rc;
+
+  #if MDBX_LOCKING == MDBX_LOCKING_SYSV
+      rc = (rc == MDBX_SUCCESS) ? check_rc : rc;
+  #else
+  #if defined(PTHREAD_MUTEX_ROBUST) || defined(pthread_mutex_consistent)
+      int mreco_rc = pthread_mutex_consistent(ipc);
+  #elif defined(PTHREAD_MUTEX_ROBUST_NP) || defined(pthread_mutex_consistent_np)
+      int mreco_rc = pthread_mutex_consistent_np(ipc);
+  #elif _POSIX_THREAD_PROCESS_SHARED < 200809L
+      int mreco_rc = pthread_mutex_consistent_np(ipc);
+  #else
+      int mreco_rc = pthread_mutex_consistent(ipc);
+  #endif
+      check_rc = (mreco_rc == 0) ? check_rc : mreco_rc;
+
+      if (unlikely(mreco_rc))
+        ERROR("lock recovery failed, %s", mdbx_strerror(mreco_rc));
+
+      rc = (rc == MDBX_SUCCESS) ? check_rc : rc;
+      if (MDBX_IS_ERROR(rc))
+        pthread_mutex_unlock(ipc);
+  #endif /* MDBX_LOCKING == MDBX_LOCKING_POSIX2008 */
+      return rc;
     }
-    WARNING("%clock owner died, %s", (rlocked ? 'r' : 'w'),
-            (rc ? "this process' env is hosed" : "recovering"));
+  #elif MDBX_LOCKING == MDBX_LOCKING_POSIX2001
+    (void)ipc;
+  #elif MDBX_LOCKING == MDBX_LOCKING_POSIX1988
+    (void)ipc;
+  #elif MDBX_LOCKING == MDBX_LOCKING_FUTEX
+  #ifdef _MSC_VER
+  #pragma message("warning: TODO")
+  #else
+  #warning "TODO"
+  #endif
+    (void)ipc;
+  #else
+  #error "FIXME"
+  #endif /* MDBX_LOCKING */
 
-    int check_rc = cleanup_dead_readers(env, rlocked, NULL);
-    check_rc = (check_rc == MDBX_SUCCESS) ? MDBX_RESULT_TRUE : check_rc;
+  #if defined(MDBX_USE_VALGRIND) || defined(__SANITIZE_ADDRESS__)
+    if (rc == EDEADLK && atomic_load32(&env->me_ignore_EDEADLK, mo_Relaxed) > 0)
+      return rc;
+  #endif /* MDBX_USE_VALGRIND || __SANITIZE_ADDRESS__ */
 
-#if MDBX_LOCKING == MDBX_LOCKING_SYSV
-    rc = (rc == MDBX_SUCCESS) ? check_rc : rc;
-#else
-#if defined(PTHREAD_MUTEX_ROBUST) || defined(pthread_mutex_consistent)
-    int mreco_rc = pthread_mutex_consistent(ipc);
-#elif defined(PTHREAD_MUTEX_ROBUST_NP) || defined(pthread_mutex_consistent_np)
-    int mreco_rc = pthread_mutex_consistent_np(ipc);
-#elif _POSIX_THREAD_PROCESS_SHARED < 200809L
-    int mreco_rc = pthread_mutex_consistent_np(ipc);
-#else
-    int mreco_rc = pthread_mutex_consistent(ipc);
-#endif
-    check_rc = (mreco_rc == 0) ? check_rc : mreco_rc;
-
-    if (unlikely(mreco_rc))
-      ERROR("lock recovery failed, %s", mdbx_strerror(mreco_rc));
-
-    rc = (rc == MDBX_SUCCESS) ? check_rc : rc;
-    if (MDBX_IS_ERROR(rc))
-      pthread_mutex_unlock(ipc);
-#endif /* MDBX_LOCKING == MDBX_LOCKING_POSIX2008 */
+    ERROR("mutex (un)lock failed, %s", mdbx_strerror(err));
+    if (rc != EDEADLK)
+      env->me_flags |= MDBX_FATAL_ERROR;
     return rc;
-  }
-#elif MDBX_LOCKING == MDBX_LOCKING_POSIX2001
-  (void)ipc;
-#elif MDBX_LOCKING == MDBX_LOCKING_POSIX1988
-  (void)ipc;
-#elif MDBX_LOCKING == MDBX_LOCKING_FUTEX
-#ifdef _MSC_VER
-#pragma message("warning: TODO")
 #else
-#warning "TODO"
-#endif
-  (void)ipc;
-#else
-#error "FIXME"
-#endif /* MDBX_LOCKING */
-
-#if defined(MDBX_USE_VALGRIND) || defined(__SANITIZE_ADDRESS__)
-  if (rc == EDEADLK && atomic_load32(&env->me_ignore_EDEADLK, mo_Relaxed) > 0)
-    return rc;
-#endif /* MDBX_USE_VALGRIND || __SANITIZE_ADDRESS__ */
-
-  ERROR("mutex (un)lock failed, %s", mdbx_strerror(err));
-  if (rc != EDEADLK)
-    env->me_flags |= MDBX_FATAL_ERROR;
-  return rc;
+  return MDBX_SUCCESS;
+#endif // GRAMINE
 }
 
 #if defined(__ANDROID_API__) || defined(ANDROID) || defined(BIONIC)
@@ -35160,64 +35218,72 @@ MDBX_INTERNAL_FUNC int osal_check_tid4bionic(void) {
 
 static int mdbx_ipclock_lock(MDBX_env *env, osal_ipclock_t *ipc,
                              const bool dont_wait) {
-#if MDBX_LOCKING == MDBX_LOCKING_POSIX2001 ||                                  \
-    MDBX_LOCKING == MDBX_LOCKING_POSIX2008
-  int rc = osal_check_tid4bionic();
-  if (likely(rc == 0))
-    rc = dont_wait ? pthread_mutex_trylock(ipc) : pthread_mutex_lock(ipc);
-  rc = (rc == EBUSY && dont_wait) ? MDBX_BUSY : rc;
-#elif MDBX_LOCKING == MDBX_LOCKING_POSIX1988
-  int rc = MDBX_SUCCESS;
-  if (dont_wait) {
-    if (sem_trywait(ipc)) {
+#ifndef GRAMINE
+  #if MDBX_LOCKING == MDBX_LOCKING_POSIX2001 ||                                  \
+      MDBX_LOCKING == MDBX_LOCKING_POSIX2008
+    int rc = osal_check_tid4bionic();
+    if (likely(rc == 0))
+      rc = dont_wait ? pthread_mutex_trylock(ipc) : pthread_mutex_lock(ipc);
+    rc = (rc == EBUSY && dont_wait) ? MDBX_BUSY : rc;
+  #elif MDBX_LOCKING == MDBX_LOCKING_POSIX1988
+    int rc = MDBX_SUCCESS;
+    if (dont_wait) {
+      if (sem_trywait(ipc)) {
+        rc = errno;
+        if (rc == EAGAIN)
+          rc = MDBX_BUSY;
+      }
+    } else if (sem_wait(ipc))
       rc = errno;
-      if (rc == EAGAIN)
+  #elif MDBX_LOCKING == MDBX_LOCKING_SYSV
+    struct sembuf op = {.sem_num = (ipc != &env->me_lck->mti_wlock),
+                        .sem_op = -1,
+                        .sem_flg = dont_wait ? IPC_NOWAIT | SEM_UNDO : SEM_UNDO};
+    int rc;
+    if (semop(env->me_sysv_ipc.semid, &op, 1)) {
+      rc = errno;
+      if (dont_wait && rc == EAGAIN)
         rc = MDBX_BUSY;
+    } else {
+      rc = *ipc ? EOWNERDEAD : MDBX_SUCCESS;
+      *ipc = env->me_pid;
     }
-  } else if (sem_wait(ipc))
-    rc = errno;
-#elif MDBX_LOCKING == MDBX_LOCKING_SYSV
-  struct sembuf op = {.sem_num = (ipc != &env->me_lck->mti_wlock),
-                      .sem_op = -1,
-                      .sem_flg = dont_wait ? IPC_NOWAIT | SEM_UNDO : SEM_UNDO};
-  int rc;
-  if (semop(env->me_sysv_ipc.semid, &op, 1)) {
-    rc = errno;
-    if (dont_wait && rc == EAGAIN)
-      rc = MDBX_BUSY;
-  } else {
-    rc = *ipc ? EOWNERDEAD : MDBX_SUCCESS;
-    *ipc = env->me_pid;
-  }
-#else
-#error "FIXME"
-#endif /* MDBX_LOCKING */
+  #else
+  #error "FIXME"
+  #endif /* MDBX_LOCKING */
 
-  if (unlikely(rc != MDBX_SUCCESS && rc != MDBX_BUSY))
-    rc = mdbx_ipclock_failed(env, ipc, rc);
-  return rc;
+    if (unlikely(rc != MDBX_SUCCESS && rc != MDBX_BUSY))
+      rc = mdbx_ipclock_failed(env, ipc, rc);
+    return rc;
+#else
+  return MDBX_SUCCESS;
+#endif // GRAMINE
 }
 
 static int mdbx_ipclock_unlock(MDBX_env *env, osal_ipclock_t *ipc) {
-#if MDBX_LOCKING == MDBX_LOCKING_POSIX2001 ||                                  \
-    MDBX_LOCKING == MDBX_LOCKING_POSIX2008
-  int rc = pthread_mutex_unlock(ipc);
-  (void)env;
-#elif MDBX_LOCKING == MDBX_LOCKING_POSIX1988
-  int rc = sem_post(ipc) ? errno : MDBX_SUCCESS;
-  (void)env;
-#elif MDBX_LOCKING == MDBX_LOCKING_SYSV
-  if (unlikely(*ipc != (pid_t)env->me_pid))
-    return EPERM;
-  *ipc = 0;
-  struct sembuf op = {.sem_num = (ipc != &env->me_lck->mti_wlock),
-                      .sem_op = 1,
-                      .sem_flg = SEM_UNDO};
-  int rc = semop(env->me_sysv_ipc.semid, &op, 1) ? errno : MDBX_SUCCESS;
+#ifndef GRAMINE
+  #if MDBX_LOCKING == MDBX_LOCKING_POSIX2001 ||                                  \
+      MDBX_LOCKING == MDBX_LOCKING_POSIX2008
+    int rc = pthread_mutex_unlock(ipc);
+    (void)env;
+  #elif MDBX_LOCKING == MDBX_LOCKING_POSIX1988
+    int rc = sem_post(ipc) ? errno : MDBX_SUCCESS;
+    (void)env;
+  #elif MDBX_LOCKING == MDBX_LOCKING_SYSV
+    if (unlikely(*ipc != (pid_t)env->me_pid))
+      return EPERM;
+    *ipc = 0;
+    struct sembuf op = {.sem_num = (ipc != &env->me_lck->mti_wlock),
+                        .sem_op = 1,
+                        .sem_flg = SEM_UNDO};
+    int rc = semop(env->me_sysv_ipc.semid, &op, 1) ? errno : MDBX_SUCCESS;
+  #else
+  #error "FIXME"
+  #endif /* MDBX_LOCKING */
+    return rc;
 #else
-#error "FIXME"
-#endif /* MDBX_LOCKING */
-  return rc;
+  return MDBX_SUCCESS;
+#endif // GRAMINE
 }
 
 MDBX_INTERNAL_FUNC int osal_rdt_lock(MDBX_env *env) {

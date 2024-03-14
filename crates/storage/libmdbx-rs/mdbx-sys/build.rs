@@ -95,8 +95,11 @@ fn main() {
         cc_builder.define("MDBX_DEBUG", "1").define("MDBX_ENABLE_PROFGC", "1");
     }
 
-    // disable MADVICE because it is not supported on gramine-sgx 
+    // Disable madvise because it is not supported in gramine and it is not needed
     cc_builder.define("MDBX_ENABLE_MADVISE", "0");
+
+    // enabling Gramine macro to remove unsupported function calls, like futexes
+    cc_builder.define("GRAMINE", "1");
 
     // Disables debug logging on optimized builds
     #[cfg(not(debug_assertions))]
